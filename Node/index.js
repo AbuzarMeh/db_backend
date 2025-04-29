@@ -341,6 +341,102 @@ app.delete("/admin/reject-event/:event_id", verifyAdmin, (req, res) => {
 //       🌟 EVENT MANAGEMENT MODULE ENDS HERE
 // ==========================================================
 
+// sponsor management 
+//get all sponsor packages
+app.get("/sponsorship/packages", (req, res) => {
+  const sql = "SELECT * FROM sponsorship_package";
+  connection.query(sql, (err, results) => {
+    if (err) return res.status(500).json({ error: "Database error", err });
+    res.json({ packages: results });
+  });
+});
+
+// signs a contract 
+app.post("/sponsorship/sign", verifyRole("sponsor"), (req, res) => {
+  const { package_id, company_name, contact_email } = req.body;
+  const user_id = req.user.user_id;
+
+  if (!package_id || !company_name || !contact_email) {
+    return res.status(400).json({ message: "All fields are required." });
+  }
+
+  // First insert sponsor info
+  const sponsorSQL = `INSERT INTO sponsor (user_id, company_name, contact_email) VALUES (?, ?, ?)`;
+  connection.query(sponsorSQL, [user_id, company_name, contact_email], (err, result) => {
+    if (err) return res.status(500).json({ error: "Error inserting sponsor", err });
+
+    const sponsor_id = result.insertId;
+
+    // Then insert sponsorship record
+    const sponsorshipSQL = `INSERT INTO sponsorship (user_id, package_id, sponsor_id, contract_date)
+                            VALUES (?, ?, ?, NOW())`;
+    connection.query(sponsorshipSQL, [user_id, package_id, sponsor_id], (err2, result2) => {
+      if (err2) return res.status(500).json({ error: "Error signing sponsorship", err2 });
+      res.status(201).json({ message: "Sponsorship signed successfully", sponsorship_id: result2.insertId });
+    });
+  });
+});
+
+//signs a contract 
+app.post("/sponsorship/sign", verifyRole("sponsor"), (req, res) => {
+  const { package_id, company_name, contact_email } = req.body;
+  const user_id = req.user.user_id;
+
+  if (!package_id || !company_name || !contact_email) {
+    return res.status(400).json({ message: "All fields are required." });
+  }
+
+  // First insert sponsor info
+  const sponsorSQL = `INSERT INTO sponsor (user_id, company_name, contact_email) VALUES (?, ?, ?)`;
+  connection.query(sponsorSQL, [user_id, company_name, contact_email], (err, result) => {
+    if (err) return res.status(500).json({ error: "Error inserting sponsor", err });
+
+    const sponsor_id = result.insertId;
+
+    // Then insert sponsorship record
+    const sponsorshipSQL = `INSERT INTO sponsorship (user_id, package_id, sponsor_id, contract_date)
+                            VALUES (?, ?, ?, NOW())`;
+    connection.query(sponsorshipSQL, [user_id, package_id, sponsor_id], (err2, result2) => {
+      if (err2) return res.status(500).json({ error: "Error signing sponsorship", err2 });
+      res.status(201).json({ message: "Sponsorship signed successfully", sponsorship_id: result2.insertId });
+    });
+  });
+});
+
+//record of payment 
+
+app.post("/sponsorship/payment", verifyRole("sponsor"), (req, res) => {
+  const { sponsorship_id, amount, method } = req.body;
+
+  if (!sponsorship_id || !amount || !method) {
+    return res.status(400).json({ message: "All fields are required." });
+  }
+
+  const sql = `INSERT INTO payment (sponsorship_id, amount, method, payment_date)
+               VALUES (?, ?, ?, NOW())`;
+
+  connection.query(sql, [sponsorship_id, amount, method], (err, result) => {
+    if (err) return res.status(500).json({ error: "Payment failed", err });
+    res.status(201).json({ message: "Payment recorded", payment_id: result.insertId });
+  });
+});
+
+
+// admin view all sponsorship payments
+app.get("/admin/sponsorship-report", verifyAdmin, (req, res) => {
+  const sql = `
+    SELECT s.sponsorship_id, sp.company_name, sp.contact_email,
+           p.amount, p.method, p.payment_date
+    FROM payment p
+    JOIN sponsorship s ON p.sponsorship_id = s.sponsorship_id
+    JOIN sponsor sp ON s.sponsor_id = sp.sponsor_id
+    ORDER BY p.payment_date DESC
+  `;
+  connection.query(sql, (err, results) => {
+    if (err) return res.status(500).json({ error: "Error fetching report", err });
+    res.json({ report: results });
+  });
+});
 
 app.listen(3000, function () {
   console.log('App listening on port 3000');
