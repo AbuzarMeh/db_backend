@@ -125,26 +125,36 @@ app.post("/addVenue", verifyAdmin, (req, res) => {
 // 🌟 EVENT MANAGEMENT MODULE 🌟
 
 // Create an event — Only Admin
-app.post("/event", verifyAdmin, (req, res) => {
-    const {
-        name, description, max_participants, registration_fee,
-        category, rules, team_allowed, max_team_participants_limit,
-        organizer_id
-    } = req.body;
+app.post("/event", verifyRole("organizer"), (req, res) => {
+  const {
+      name, description, max_participants, registration_fee,
+      category, rules, team_allowed, max_team_participants_limit
+  } = req.body;
 
-    const sql = `INSERT INTO event 
-        (name, description, max_participants, registration_fee, category, rules, team_allowed, max_team_participants_limit, organizer_id) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  const organizer_id = req.user.user_id;
 
-    connection.query(sql, [
-        name, description, max_participants, registration_fee,
-        category, rules, team_allowed, max_team_participants_limit,
-        organizer_id
-    ], (err, result) => {
-        if (err) return res.status(500).json({ error: "Error creating event", err });
-        res.status(201).json({ message: "Event created", event_id: result.insertId });
-    });
+  if (
+      !name || !description || max_participants == null || registration_fee == null ||
+      !category || !rules || team_allowed == null || max_team_participants_limit == null
+  ) {
+      return res.status(400).json({ error: "All fields are required." });
+  }
+
+  const sql = `INSERT INTO event 
+      (name, description, max_participants, registration_fee, category, rules, team_allowed, max_team_participants_limit, organizer_id, status) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`;
+
+  connection.query(sql, [
+      name, description, max_participants, registration_fee,
+      category, rules, team_allowed, max_team_participants_limit,
+      organizer_id
+  ], (err, result) => {
+      if (err) return res.status(500).json({ error: "Error creating event", err });
+      res.status(201).json({ message: "Event submitted for approval", event_id: result.insertId });
+  });
 });
+
+
 
 // Get all events — Anyone (no role check)
 app.get("/events", (req, res) => {
@@ -166,36 +176,49 @@ app.get("/event/:id", (req, res) => {
 
 // Register for an event — Only Student
 app.post("/register-event", verifyRole("student"), (req, res) => {
-    const { user_id, event_id, team_id } = req.body;
-    if (!user_id || !event_id) return res.status(400).json({ message: "Required fields missing" });
+  const { user_id, event_id } = req.body;
 
-    const sql = `INSERT INTO participant (user_id, event_id, team_id) VALUES (?, ?, ?)`;
-    connection.query(sql, [user_id, event_id, team_id || null], (err, result) => {
-        if (err) return res.status(500).json({ error: "Error registering participant", err });
-        res.status(201).json({ message: "Registered successfully", participant_id: result.insertId });
-    });
+  if (!user_id || !event_id) {
+      return res.status(400).json({ message: "user_id and event_id are required." });
+  }
+
+  const sql = `INSERT INTO participant (user_id, event_id, team_id) VALUES (?, ?, ?)`;
+  connection.query(sql, [user_id, event_id, req.body.team_id || null], (err, result) => {
+      if (err) return res.status(500).json({ error: "Error registering participant", err });
+      res.status(201).json({ message: "Registered successfully", participant_id: result.insertId });
+  });
 });
+
 
 // Schedule a round — Only Organizer
 app.post("/event-round", verifyRole("organizer"), (req, res) => {
-    const { event_id, roundType, date_time, venue_id } = req.body;
+  const { event_id, roundType, date_time, venue_id } = req.body;
 
-    const sql = `INSERT INTO event_round (event_id, roundType, date_time, venue_id) VALUES (?, ?, ?, ?)`;
-    connection.query(sql, [event_id, roundType, date_time, venue_id], (err, result) => {
-        if (err) return res.status(500).json({ error: "Error creating round", err });
-        res.status(201).json({ message: "Round scheduled", round_id: result.insertId });
-    });
+  if (!event_id || !roundType || !date_time || !venue_id) {
+      return res.status(400).json({ error: "All fields are required." });
+  }
+
+  const sql = `INSERT INTO event_round (event_id, roundType, date_time, venue_id) VALUES (?, ?, ?, ?)`;
+  connection.query(sql, [event_id, roundType, date_time, venue_id], (err, result) => {
+      if (err) return res.status(500).json({ error: "Error creating round", err });
+      res.status(201).json({ message: "Round scheduled", round_id: result.insertId });
+  });
 });
+
 
 // Judge assigns score — Only Judge
 app.post("/score", verifyRole("judge"), (req, res) => {
-    const { team_id, event_round_id, score } = req.body;
+  const { team_id, event_round_id, score } = req.body;
 
-    const sql = `INSERT INTO score (team_id, event_round_id, score) VALUES (?, ?, ?)`;
-    connection.query(sql, [team_id, event_round_id, score], (err, result) => {
-        if (err) return res.status(500).json({ error: "Error submitting score", err });
-        res.status(201).json({ message: "Score submitted", score_id: result.insertId });
-    });
+  if (!team_id || !event_round_id || score == null) {
+      return res.status(400).json({ error: "All fields are required." });
+  }
+
+  const sql = `INSERT INTO score (team_id, event_round_id, score) VALUES (?, ?, ?)`;
+  connection.query(sql, [team_id, event_round_id, score], (err, result) => {
+      if (err) return res.status(500).json({ error: "Error submitting score", err });
+      res.status(201).json({ message: "Score submitted", score_id: result.insertId });
+  });
 });
 
 // Find available venues at a given time — Only Organizer
@@ -278,10 +301,46 @@ app.get("/leaderboard/:event_id", (req, res) => {
         res.json({ winners: results });
     });
 });
+// 🔐 Admin-only: View all pending events
+app.get("/admin/pending-events", verifyAdmin, (req, res) => {
+  const sql = `SELECT * FROM event WHERE status = 'pending'`;
+  connection.query(sql, (err, results) => {
+    if (err) return res.status(500).json({ error: "Database error", err });
+    res.json({ pending_events: results });
+  });
+});
+
+// 🔐 Admin-only: Approve an event
+app.post("/admin/approve-event/:event_id", verifyAdmin, (req, res) => {
+  const event_id = req.params.event_id;
+  const sql = `UPDATE event SET status = 'approved' WHERE event_id = ? AND status = 'pending'`;
+
+  connection.query(sql, [event_id], (err, result) => {
+    if (err) return res.status(500).json({ error: "Database error", err });
+    if (result.affectedRows === 0)
+      return res.status(404).json({ message: "Event not found or already processed" });
+    res.json({ message: "Event approved successfully" });
+  });
+});
+
+// 🔐 Admin-only: Reject and delete an event
+app.delete("/admin/reject-event/:event_id", verifyAdmin, (req, res) => {
+  const event_id = req.params.event_id;
+  const sql = `DELETE FROM event WHERE event_id = ? AND status = 'pending'`;
+
+  connection.query(sql, [event_id], (err, result) => {
+    if (err) return res.status(500).json({ error: "Database error", err });
+    if (result.affectedRows === 0)
+      return res.status(404).json({ message: "Event not found or already processed" });
+    res.json({ message: "Event rejected and deleted successfully" });
+  });
+});
+
 
 // ==========================================================
 //       🌟 EVENT MANAGEMENT MODULE ENDS HERE
 // ==========================================================
+
 
 app.listen(3000, function () {
   console.log('App listening on port 3000');
