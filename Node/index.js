@@ -5,8 +5,8 @@ var connection = require('./database');
 const bearerToken = require('express-bearer-token');
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
-
-const { verifyAdmin } = require("./middleware/auth");
+const { verifyToken, verifyAdmin, verifyRole } = require("./middleware/auth");
+// const { verifyAdmin } = require("./middleware/auth");
 const SECRET_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJlbWFpbCI6ImFkbWluQGFkbWluLmNvbSIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTc0NTMyODQzMCwiZXhwIjoxNzQ1MzMyMDMwfQ.fsF6kKidREhgQitmze2WdWTUmmdxQ6VFheORp36RptI";
 
 app.use(express.json());
@@ -120,96 +120,163 @@ app.post("/addVenue", verifyAdmin, (req, res) => {
 //       🌟 EVENT MANAGEMENT MODULE BACKEND STARTS HERE
 // ==========================================================
 
-// Create an event
-app.post("/event", (req, res) => {
-  const {
-    name, description, max_participants, registration_fee,
-    category, rules, team_allowed, max_team_participants_limit,
-    organizer_id
-  } = req.body;
 
-  const sql = `INSERT INTO event 
-    (name, description, max_participants, registration_fee, category, rules, team_allowed, max_team_participants_limit, organizer_id) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-  connection.query(sql, [
-    name, description, max_participants, registration_fee,
-    category, rules, team_allowed, max_team_participants_limit,
-    organizer_id
-  ], (err, result) => {
-    if (err) return res.status(500).json({ error: "Error creating event", err });
-    res.status(201).json({ message: "Event created", event_id: result.insertId });
-  });
+// 🌟 EVENT MANAGEMENT MODULE 🌟
+
+// Create an event — Only Admin
+app.post("/event", verifyAdmin, (req, res) => {
+    const {
+        name, description, max_participants, registration_fee,
+        category, rules, team_allowed, max_team_participants_limit,
+        organizer_id
+    } = req.body;
+
+    const sql = `INSERT INTO event 
+        (name, description, max_participants, registration_fee, category, rules, team_allowed, max_team_participants_limit, organizer_id) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+    connection.query(sql, [
+        name, description, max_participants, registration_fee,
+        category, rules, team_allowed, max_team_participants_limit,
+        organizer_id
+    ], (err, result) => {
+        if (err) return res.status(500).json({ error: "Error creating event", err });
+        res.status(201).json({ message: "Event created", event_id: result.insertId });
+    });
 });
 
-// Get all events
+// Get all events — Anyone (no role check)
 app.get("/events", (req, res) => {
-  connection.query("SELECT * FROM event", (err, results) => {
-    if (err) return res.status(500).json({ error: "Database error" });
-    res.json(results);
-  });
+    connection.query("SELECT * FROM event", (err, results) => {
+        if (err) return res.status(500).json({ error: "Database error" });
+        res.json(results);
+    });
 });
 
-// Get single event
+// Get single event — Anyone (no role check)
 app.get("/event/:id", (req, res) => {
-  const eventId = req.params.id;
-  connection.query("SELECT * FROM event WHERE event_id = ?", [eventId], (err, results) => {
-    if (err) return res.status(500).json({ error: "Database error" });
-    if (results.length === 0) return res.status(404).json({ message: "Event not found" });
-    res.json(results[0]);
+    const eventId = req.params.id;
+    connection.query("SELECT * FROM event WHERE event_id = ?", [eventId], (err, results) => {
+        if (err) return res.status(500).json({ error: "Database error" });
+        if (results.length === 0) return res.status(404).json({ message: "Event not found" });
+        res.json(results[0]);
+    });
+});
+
+// Register for an event — Only Student
+app.post("/register-event", verifyRole("student"), (req, res) => {
+    const { user_id, event_id, team_id } = req.body;
+    if (!user_id || !event_id) return res.status(400).json({ message: "Required fields missing" });
+
+    const sql = `INSERT INTO participant (user_id, event_id, team_id) VALUES (?, ?, ?)`;
+    connection.query(sql, [user_id, event_id, team_id || null], (err, result) => {
+        if (err) return res.status(500).json({ error: "Error registering participant", err });
+        res.status(201).json({ message: "Registered successfully", participant_id: result.insertId });
+    });
+});
+
+// Schedule a round — Only Organizer
+app.post("/event-round", verifyRole("organizer"), (req, res) => {
+    const { event_id, roundType, date_time, venue_id } = req.body;
+
+    const sql = `INSERT INTO event_round (event_id, roundType, date_time, venue_id) VALUES (?, ?, ?, ?)`;
+    connection.query(sql, [event_id, roundType, date_time, venue_id], (err, result) => {
+        if (err) return res.status(500).json({ error: "Error creating round", err });
+        res.status(201).json({ message: "Round scheduled", round_id: result.insertId });
+    });
+});
+
+// Judge assigns score — Only Judge
+app.post("/score", verifyRole("judge"), (req, res) => {
+    const { team_id, event_round_id, score } = req.body;
+
+    const sql = `INSERT INTO score (team_id, event_round_id, score) VALUES (?, ?, ?)`;
+    connection.query(sql, [team_id, event_round_id, score], (err, result) => {
+        if (err) return res.status(500).json({ error: "Error submitting score", err });
+        res.status(201).json({ message: "Score submitted", score_id: result.insertId });
+    });
+});
+
+// Find available venues at a given time — Only Organizer
+app.post("/available-venues", verifyRole("organizer"), (req, res) => {
+  const { date_time } = req.body;
+
+  if (!date_time) {
+      return res.status(400).json({ error: "Date and time required." });
+  }
+
+  // Find venues NOT booked at that date_time
+  const sql = `
+      SELECT v.*
+      FROM venue v
+      WHERE v.venue_id NOT IN (
+          SELECT venue_id
+          FROM event_round
+          WHERE date_time = ?
+      )
+  `;
+
+  connection.query(sql, [date_time], (err, results) => {
+      if (err) return res.status(500).json({ error: "Error fetching available venues", err });
+      res.json({ available_venues: results });
   });
 });
 
-// Register for an event
-app.post("/register-event", (req, res) => {
-  const { user_id, event_id, team_id } = req.body;
-  if (!user_id || !event_id) return res.status(400).json({ message: "Required fields missing" });
-
-  const sql = `INSERT INTO participant (user_id, event_id, team_id) VALUES (?, ?, ?)`;
-  connection.query(sql, [user_id, event_id, team_id || null], (err, result) => {
-    if (err) return res.status(500).json({ error: "Error registering participant", err });
-    res.status(201).json({ message: "Registered successfully", participant_id: result.insertId });
-  });
-});
-
-// Schedule a round
-app.post("/event-round", (req, res) => {
+// Organizer adds a round after picking time & venue
+app.post("/add-round", verifyRole("organizer"), (req, res) => {
   const { event_id, roundType, date_time, venue_id } = req.body;
 
-  const sql = `INSERT INTO event_round (event_id, roundType, date_time, venue_id) VALUES (?, ?, ?, ?)`;
-  connection.query(sql, [event_id, roundType, date_time, venue_id], (err, result) => {
-    if (err) return res.status(500).json({ error: "Error creating round", err });
-    res.status(201).json({ message: "Round scheduled", round_id: result.insertId });
-  });
-});
+  if (!event_id || !roundType || !date_time || !venue_id) {
+      return res.status(400).json({ error: "All fields are required." });
+  }
 
-// Judge assigns score
-app.post("/score", (req, res) => {
-  const { team_id, event_round_id, score } = req.body;
-
-  const sql = `INSERT INTO score (team_id, event_round_id, score) VALUES (?, ?, ?)`;
-  connection.query(sql, [team_id, event_round_id, score], (err, result) => {
-    if (err) return res.status(500).json({ error: "Error submitting score", err });
-    res.status(201).json({ message: "Score submitted", score_id: result.insertId });
-  });
-});
-
-// Get leaderboard
-app.get("/leaderboard/:event_id", (req, res) => {
-  const event_id = req.params.event_id;
   const sql = `
-    SELECT s.team_id, AVG(s.score) as avg_score
-    FROM score s
-    JOIN event_round er ON s.event_round_id = er.event_round_id
-    WHERE er.event_id = ?
-    GROUP BY s.team_id
-    ORDER BY avg_score DESC
-    LIMIT 3
+      INSERT INTO event_round (event_id, roundType, date_time, venue_id)
+      VALUES (?, ?, ?, ?)
   `;
-  connection.query(sql, [event_id], (err, results) => {
-    if (err) return res.status(500).json({ error: "Error fetching leaderboard", err });
-    res.json({ winners: results });
+
+  connection.query(sql, [event_id, roundType, date_time, venue_id], (err, result) => {
+      if (err) return res.status(500).json({ error: "Error scheduling round", err });
+      res.status(201).json({ message: "Round scheduled successfully", round_id: result.insertId });
   });
+});
+
+// Get all rounds of an event
+app.get("/event-rounds/:event_id", (req, res) => {
+  const event_id = req.params.event_id;
+
+  const sql = `
+      SELECT er.*, v.name AS venue_name
+      FROM event_round er
+      JOIN venue v ON er.venue_id = v.venue_id
+      WHERE er.event_id = ?
+      ORDER BY er.date_time ASC
+  `;
+
+  connection.query(sql, [event_id], (err, results) => {
+      if (err) return res.status(500).json({ error: "Error fetching event rounds", err });
+      res.json({ rounds: results });
+  });
+});
+
+
+// Get leaderboard — Anyone (no role check)
+app.get("/leaderboard/:event_id", (req, res) => {
+    const event_id = req.params.event_id;
+    const sql = `
+        SELECT s.team_id, AVG(s.score) as avg_score
+        FROM score s
+        JOIN event_round er ON s.event_round_id = er.event_round_id
+        WHERE er.event_id = ?
+        GROUP BY s.team_id
+        ORDER BY avg_score DESC
+        LIMIT 3
+    `;
+    connection.query(sql, [event_id], (err, results) => {
+        if (err) return res.status(500).json({ error: "Error fetching leaderboard", err });
+        res.json({ winners: results });
+    });
 });
 
 // ==========================================================
