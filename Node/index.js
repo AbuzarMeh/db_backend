@@ -305,12 +305,22 @@ app.post("/login", (req, res) => {
     if (!match) return res.status(401).json({ error: "Invalid credentials" });
 
     const token = generateToken();
-    connection.query("INSERT INTO tokens (token, user_id) VALUES (?, ?)", [token, user.user_id], (err) => {
-      if (err) return res.status(500).json({ error: "Token storage error", err });
-      res.json({ message: "Login successful", token });
-    });
+    connection.query(
+      "INSERT INTO tokens (token, user_id) VALUES (?, ?)", 
+      [token, user.user_id], 
+      (err) => {
+        if (err) return res.status(500).json({ error: "Token storage error", err });
+
+        res.json({
+          message: "Login successful",
+          token,
+          role: user.role // Include user role in response
+        });
+      }
+    );
   });
 });
+
 
 // ----------- Admin: Add Venue ------------------
 app.post("/addVenue", verifyAdmin, (req, res) => {
