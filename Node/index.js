@@ -1,4 +1,5 @@
 var express = require("express");
+const moment = require('moment');
 var mysql = require("mysql2");
 var app = express();
 var connection = require('./database');
@@ -6,7 +7,6 @@ const bearerToken = require('express-bearer-token');
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 const { verifyToken, verifyAdmin, verifyRole } = require("./middleware/auth");
-// const { verifyAdmin } = require("./middleware/auth");
 const SECRET_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJlbWFpbCI6ImFkbWluQGFkbWluLmNvbSIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTc0NTMyODQzMCwiZXhwIjoxNzQ1MzMyMDMwfQ.fsF6kKidREhgQitmze2WdWTUmmdxQ6VFheORp36RptI";
 
 app.use(express.json());
@@ -22,8 +22,147 @@ function generateToken() {
 
 // ----------- Table Creation (Unchanged) ------------------
 app.get("/create-tables", (req, res) => {
-  const queries = [ /* all your table creation queries from before */ ];
+  const queries = [
 
+    // User Table
+    `CREATE TABLE IF NOT EXISTS user (
+      user_id INT PRIMARY KEY AUTO_INCREMENT,
+      name VARCHAR(100),
+      email VARCHAR(100) UNIQUE,
+      password VARCHAR(255),
+      contact VARCHAR(20),
+      role VARCHAR(50)
+    );`,
+
+    // Sponsor Table
+    `CREATE TABLE IF NOT EXISTS sponsor (
+      sponsor_id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT,
+      contact_id VARCHAR(100),
+      contact_person VARCHAR(100),
+      FOREIGN KEY (user_id) REFERENCES user(user_id)
+    );`,
+
+    // Sponsorship Packages
+    `CREATE TABLE IF NOT EXISTS sponsorship_package (
+      package_id INT PRIMARY KEY AUTO_INCREMENT,
+      name VARCHAR(100),
+      perks TEXT,
+      price DECIMAL(10,2)
+    );`,
+
+    // Sponsorship
+    `CREATE TABLE IF NOT EXISTS sponsorship (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      sponsor_id INT,
+      package_id INT,
+      payment_status BOOLEAN,
+      FOREIGN KEY (sponsor_id) REFERENCES sponsor(sponsor_id),
+      FOREIGN KEY (package_id) REFERENCES sponsorship_package(package_id)
+    );`,
+
+    // Venue
+    `CREATE TABLE IF NOT EXISTS venue (
+      venue_id INT PRIMARY KEY AUTO_INCREMENT,
+      name VARCHAR(100),
+      location VARCHAR(255),
+      type VARCHAR(50),
+      capacity INT
+    );`,
+
+    // Event
+    `CREATE TABLE IF NOT EXISTS event (
+      event_id INT PRIMARY KEY AUTO_INCREMENT,
+      name VARCHAR(100),
+      description TEXT,
+      max_participants INT,
+      registration_fee DECIMAL(10,2),
+      category VARCHAR(50),
+      rules TEXT,
+      team_allowed BOOLEAN,
+      max_team_participants_limit INT,
+      organizer_id INT,
+      accepted BOOLEAN DEFAULT FALSE,
+      FOREIGN KEY (organizer_id) REFERENCES user(user_id)
+    );`,
+
+    // Event Round
+    `CREATE TABLE IF NOT EXISTS event_round (
+      event_round_id INT PRIMARY KEY AUTO_INCREMENT,
+      event_id INT,
+      roundType VARCHAR(100),
+      date_time DATETIME,
+      venue_id INT,
+      FOREIGN KEY (event_id) REFERENCES event(event_id),
+      FOREIGN KEY (venue_id) REFERENCES venue(venue_id)
+    );`,
+
+    // Participants
+    `CREATE TABLE IF NOT EXISTS participant (
+      participant_id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT,
+      event_id INT,
+      payment_status BOOLEAN DEFAULT FALSE,
+      team_id VARCHAR(100),
+      FOREIGN KEY (user_id) REFERENCES user(user_id),
+      FOREIGN KEY (event_id) REFERENCES event(event_id)
+    );`,
+
+    // Accommodation
+    `CREATE TABLE IF NOT EXISTS accommodation (
+      accommodation_id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT,
+      room_type VARCHAR(50),
+      cost DECIMAL(10,2),
+      assigned BOOLEAN DEFAULT FALSE,
+      payment_status BOOLEAN DEFAULT FALSE,
+      FOREIGN KEY (user_id) REFERENCES user(user_id)
+    );`,
+
+    // Payment
+    `CREATE TABLE IF NOT EXISTS payment (
+      payment_id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT,
+      payment_type VARCHAR(50),
+      verified_status BOOLEAN DEFAULT FALSE,
+      date DATETIME,
+      sponsorship_id INT,
+      accommodation_id INT,
+      team_id VARCHAR(100),
+      FOREIGN KEY (user_id) REFERENCES user(user_id),
+      FOREIGN KEY (sponsorship_id) REFERENCES sponsorship(id),
+      FOREIGN KEY (accommodation_id) REFERENCES accommodation(accommodation_id)
+    );`,
+
+    // Judge
+    `CREATE TABLE IF NOT EXISTS judge (
+      judge_id INT PRIMARY KEY AUTO_INCREMENT,
+      user_id INT,
+      event_round_id INT,
+      FOREIGN KEY (user_id) REFERENCES user(user_id),
+      FOREIGN KEY (event_round_id) REFERENCES event_round(event_round_id)
+    );`,
+
+    // Score
+    `CREATE TABLE IF NOT EXISTS score (
+      score_id INT PRIMARY KEY AUTO_INCREMENT,
+      team_id VARCHAR(100),
+      event_round_id INT,
+      score DECIMAL(5,2),
+      FOREIGN KEY (event_round_id) REFERENCES event_round(event_round_id)
+    );`,
+
+    // Token 
+    `
+    CREATE TABLE IF NOT EXISTS tokens (
+      token VARCHAR(255) PRIMARY KEY,
+      user_id INT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES user(user_id) ON DELETE CASCADE
+    )`
+  ];
+
+  // Execute all queries one by one
   let successCount = 0;
   queries.forEach((query, index) => {
     connection.query(query, (err, result) => {
@@ -39,17 +178,79 @@ app.get("/create-tables", (req, res) => {
   });
 });
 
-app.post("/createTokensTable", (req, res) => {
-  const createTableSQL = `
-    CREATE TABLE IF NOT EXISTS tokens (
-      token VARCHAR(255) PRIMARY KEY,
-      user_id INT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES user(user_id) ON DELETE CASCADE
-    )`;
-  connection.query(createTableSQL, (err) => {
-    if (err) return res.status(500).json({ message: "Error creating tokens table", error: err });
-    res.status(201).json({ message: "Tokens table created successfully!" });
+app.post('/create-trigger/checkVenueAvailabilityBeforeInsert', (req, res) => {
+  const createTriggerSql = `
+      -- Change the delimiter to $$ temporarily
+      DELIMITER $$
+
+      CREATE TRIGGER check_venue_availability_before_insert
+      BEFORE INSERT ON event_round
+      FOR EACH ROW
+      BEGIN
+          -- Declare the variable to store the count of bookings
+          DECLARE venue_count INT;
+
+          -- Check if the venue is already booked at the selected date and time
+          SELECT COUNT(*) INTO venue_count
+          FROM event_round
+          WHERE venue_id = NEW.venue_id
+            AND DATE(NEW.date_time) = DATE(date_time)  -- Compare only the date part
+            AND TIME(NEW.date_time) BETWEEN TIME(date_time) AND ADDTIME(TIME(date_time), '02:00:00'); -- Assuming a 2-hour round duration
+
+          -- If the venue is already booked, throw an error
+          IF venue_count > 0 THEN
+              SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'The venue is already booked for this date and time.';
+          END IF;
+      END $$
+
+      -- Reset the delimiter to the default semicolon
+      DELIMITER ;
+  `;
+
+  // Execute the query to create the trigger
+  connection.query(createTriggerSql, (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error creating trigger', error: err });
+    }
+    res.status(200).json({ message: 'Trigger created successfully', result });
+  });
+});
+
+app.post("/alter-event-add-status", (req, res) => {
+  const sql = `
+      ALTER TABLE event
+      ADD COLUMN status ENUM('pending', 'accepted', 'rejected') DEFAULT 'pending'
+  `;
+
+  connection.query(sql, (err, result) => {
+      if (err) {
+          // Column might already exist, return meaningful error
+          if (err.code === "ER_DUP_FIELDNAME") {
+              return res.status(400).json({ message: "Column 'status' already exists" });
+          }
+          return res.status(500).json({ message: "Failed to alter event table", error: err });
+      }
+
+      res.status(200).json({ message: "Column 'status' added to event table successfully" });
+  });
+});
+
+app.post("/alter-payment-account", (req, res) => {
+  const sql = `
+      ALTER TABLE payment
+      ADD COLUMN account_number VARCHAR(100) NOT NULL;
+  `;
+
+  connection.query(sql, (err, result) => {
+      if (err) {
+          // Column might already exist, return meaningful error
+          if (err.code === "ER_DUP_FIELDNAME") {
+              return res.status(400).json({ message: "Column 'account_number' already exists" });
+          }
+          return res.status(500).json({ message: "Failed to alter payment table", error: err });
+      }
+
+      res.status(200).json({ message: "Column 'account_number' added to event table successfully" });
   });
 });
 
@@ -116,332 +317,308 @@ app.post("/addVenue", verifyAdmin, (req, res) => {
   });
 });
 
-// ==========================================================
-//       🌟 EVENT MANAGEMENT MODULE BACKEND STARTS HERE
-// ==========================================================
+app.post("/sponsor/add", (req, res) => {
+  const { user_id, contact_id, contact_person } = req.body;
 
+  if (!user_id || !contact_id || !contact_person) {
+      return res.status(400).json({ message: "All fields (user_id, contact_id, contact_person) are required" });
+  }
+
+  const sql = `
+      INSERT INTO sponsor (user_id, contact_id, contact_person)
+      VALUES (?, ?, ?)
+  `;
+
+  connection.query(sql, [user_id, contact_id, contact_person], (err, result) => {
+      if (err) {
+          return res.status(500).json({ message: "Failed to add sponsor", error: err });
+      }
+
+      res.status(201).json({ message: "Sponsor added successfully", sponsor_id: result.insertId });
+  });
+});
 
 
 // 🌟 EVENT MANAGEMENT MODULE 🌟
 
-// Create an event — Only Admin
 app.post("/event", verifyRole("organizer"), (req, res) => {
   const {
-      name, description, max_participants, registration_fee,
-      category, rules, team_allowed, max_team_participants_limit
+      name,
+      description,
+      max_participants,
+      registration_fee,
+      category,
+      rules,
+      team_allowed,
+      max_team_participants_limit
   } = req.body;
 
-  const organizer_id = req.user.user_id;
-
+  // Validate all required fields
   if (
-      !name || !description || max_participants == null || registration_fee == null ||
-      !category || !rules || team_allowed == null || max_team_participants_limit == null
+      !name || !description || max_participants == null ||
+      registration_fee == null || !category || !rules ||
+      team_allowed == null || max_team_participants_limit == null
   ) {
-      return res.status(400).json({ error: "All fields are required." });
+      return res.status(400).json({ message: "All fields are required." });
   }
 
-  const sql = `INSERT INTO event 
-      (name, description, max_participants, registration_fee, category, rules, team_allowed, max_team_participants_limit, organizer_id, status) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`;
+  const organizer_id = req.user.user_id; // Extract from verified token
 
-  connection.query(sql, [
-      name, description, max_participants, registration_fee,
-      category, rules, team_allowed, max_team_participants_limit,
+  const sql = `
+      INSERT INTO event (
+          name, description, max_participants, registration_fee,
+          category, rules, team_allowed, max_team_participants_limit, organizer_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
+  const values = [
+      name,
+      description,
+      max_participants,
+      registration_fee,
+      category,
+      rules,
+      team_allowed,
+      max_team_participants_limit,
       organizer_id
-  ], (err, result) => {
-      if (err) return res.status(500).json({ error: "Error creating event", err });
-      res.status(201).json({ message: "Event submitted for approval", event_id: result.insertId });
+  ];
+
+  connection.query(sql, values, (err, result) => {
+      if (err) {
+          console.error("Database error:", err);
+          return res.status(500).json({ message: "Error creating event.", error: err });
+      }
+
+      res.status(201).json({
+          message: "Event created successfully.",
+          event_id: result.insertId
+      });
   });
 });
 
+app.post("/event-round/add", verifyRole("organizer"), (req, res) => {
+  const { event_id, roundType, date_time, venue_id } = req.body;
 
+  if (!event_id || !roundType || !date_time || !venue_id) {
+    return res.status(400).json({ message: "Event ID, round type, date/time, and venue ID are required" });
+  }
 
-// Get all events — Anyone (no role check)
+  // Step 1: Try inserting the new event round (this will trigger the check for venue availability)
+  const insertSql = `
+    INSERT INTO event_round (event_id, roundType, date_time, venue_id)
+    VALUES (?, ?, ?, ?)
+  `;
+
+  connection.query(insertSql, [event_id, roundType, date_time, venue_id], (err, result) => {
+    if (err) {
+      // Check if the error is related to the venue conflict
+      if (err.code === '45000') {
+        return res.status(400).json({ message: err.message });
+      }
+      return res.status(500).json({ message: "Failed to add event round", error: err });
+    }
+
+    res.status(201).json({ message: "Event round added successfully", event_round_id: result.insertId });
+  });
+});
+
 app.get("/events", (req, res) => {
-    connection.query("SELECT * FROM event", (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        res.json(results);
-    });
-});
-
-// Get single event — Anyone (no role check)
-app.get("/event/:id", (req, res) => {
-    const eventId = req.params.id;
-    connection.query("SELECT * FROM event WHERE event_id = ?", [eventId], (err, results) => {
-        if (err) return res.status(500).json({ error: "Database error" });
-        if (results.length === 0) return res.status(404).json({ message: "Event not found" });
-        res.json(results[0]);
-    });
-});
-
-// Register for an event — Only Student
-app.post("/register-event", verifyRole("student"), (req, res) => {
-  const { user_id, event_id } = req.body;
-
-  if (!user_id || !event_id) {
-      return res.status(400).json({ message: "user_id and event_id are required." });
-  }
-
-  const sql = `INSERT INTO participant (user_id, event_id, team_id) VALUES (?, ?, ?)`;
-  connection.query(sql, [user_id, event_id, req.body.team_id || null], (err, result) => {
-      if (err) return res.status(500).json({ error: "Error registering participant", err });
-      res.status(201).json({ message: "Registered successfully", participant_id: result.insertId });
-  });
-});
-
-
-// Schedule a round — Only Organizer
-app.post("/event-round", verifyRole("organizer"), (req, res) => {
-  const { event_id, roundType, date_time, venue_id } = req.body;
-
-  if (!event_id || !roundType || !date_time || !venue_id) {
-      return res.status(400).json({ error: "All fields are required." });
-  }
-
-  const sql = `INSERT INTO event_round (event_id, roundType, date_time, venue_id) VALUES (?, ?, ?, ?)`;
-  connection.query(sql, [event_id, roundType, date_time, venue_id], (err, result) => {
-      if (err) return res.status(500).json({ error: "Error creating round", err });
-      res.status(201).json({ message: "Round scheduled", round_id: result.insertId });
-  });
-});
-
-
-// Judge assigns score — Only Judge
-app.post("/score", verifyRole("judge"), (req, res) => {
-  const { team_id, event_round_id, score } = req.body;
-
-  if (!team_id || !event_round_id || score == null) {
-      return res.status(400).json({ error: "All fields are required." });
-  }
-
-  const sql = `INSERT INTO score (team_id, event_round_id, score) VALUES (?, ?, ?)`;
-  connection.query(sql, [team_id, event_round_id, score], (err, result) => {
-      if (err) return res.status(500).json({ error: "Error submitting score", err });
-      res.status(201).json({ message: "Score submitted", score_id: result.insertId });
-  });
-});
-
-// Find available venues at a given time — Only Organizer
-app.post("/available-venues", verifyRole("organizer"), (req, res) => {
-  const { date_time } = req.body;
-
-  if (!date_time) {
-      return res.status(400).json({ error: "Date and time required." });
-  }
-
-  // Find venues NOT booked at that date_time
   const sql = `
-      SELECT v.*
-      FROM venue v
-      WHERE v.venue_id NOT IN (
-          SELECT venue_id
-          FROM event_round
-          WHERE date_time = ?
-      )
+      SELECT 
+          e.*, 
+          u.name AS organizer_name, 
+          u.email AS organizer_email 
+      FROM event e 
+      JOIN user u ON e.organizer_id = u.user_id
   `;
-
-  connection.query(sql, [date_time], (err, results) => {
-      if (err) return res.status(500).json({ error: "Error fetching available venues", err });
-      res.json({ available_venues: results });
+  connection.query(sql, (err, results) => {
+      if (err) return res.status(500).json({ message: "Error fetching events", error: err });
+      res.status(200).json({ events: results });
   });
 });
 
-// Organizer adds a round after picking time & venue
-app.post("/add-round", verifyRole("organizer"), (req, res) => {
-  const { event_id, roundType, date_time, venue_id } = req.body;
-
-  if (!event_id || !roundType || !date_time || !venue_id) {
-      return res.status(400).json({ error: "All fields are required." });
-  }
-
+app.get("/events/accepted" , (req, res) => {
   const sql = `
-      INSERT INTO event_round (event_id, roundType, date_time, venue_id)
-      VALUES (?, ?, ?, ?)
+      SELECT 
+          e.*, 
+          u.name AS organizer_name, 
+          u.email AS organizer_email 
+      FROM event e 
+      JOIN user u ON e.organizer_id = u.user_id
+      WHERE e.accepted = TRUE
   `;
-
-  connection.query(sql, [event_id, roundType, date_time, venue_id], (err, result) => {
-      if (err) return res.status(500).json({ error: "Error scheduling round", err });
-      res.status(201).json({ message: "Round scheduled successfully", round_id: result.insertId });
+  connection.query(sql, (err, results) => {
+      if (err) return res.status(500).json({ message: "Error fetching accepted events", error: err });
+      res.status(200).json({ accepted_events: results });
   });
 });
 
-// Get all rounds of an event
-app.get("/event-rounds/:event_id", (req, res) => {
-  const event_id = req.params.event_id;
-
+app.get("/event/:eventId/rounds", (req, res) => {
+  const { eventId } = req.params;
   const sql = `
-      SELECT er.*, v.name AS venue_name
+      SELECT 
+          er.*, 
+          v.name AS venue_name, 
+          v.location AS venue_location, 
+          v.capacity 
       FROM event_round er
       JOIN venue v ON er.venue_id = v.venue_id
       WHERE er.event_id = ?
-      ORDER BY er.date_time ASC
   `;
-
-  connection.query(sql, [event_id], (err, results) => {
-      if (err) return res.status(500).json({ error: "Error fetching event rounds", err });
-      res.json({ rounds: results });
+  connection.query(sql, [eventId], (err, results) => {
+      if (err) return res.status(500).json({ message: "Error fetching event rounds", error: err });
+      res.status(200).json({ event_rounds: results });
   });
 });
 
+app.post("/event/accept/:event_id", verifyAdmin, (req, res) => {
+  const { event_id } = req.params;
 
-// Get leaderboard — Anyone (no role check)
-app.get("/leaderboard/:event_id", (req, res) => {
-    const event_id = req.params.event_id;
-    const sql = `
-        SELECT s.team_id, AVG(s.score) as avg_score
-        FROM score s
-        JOIN event_round er ON s.event_round_id = er.event_round_id
-        WHERE er.event_id = ?
-        GROUP BY s.team_id
-        ORDER BY avg_score DESC
-        LIMIT 3
-    `;
-    connection.query(sql, [event_id], (err, results) => {
-        if (err) return res.status(500).json({ error: "Error fetching leaderboard", err });
-        res.json({ winners: results });
-    });
-});
-// 🔐 Admin-only: View all pending events
-app.get("/admin/pending-events", verifyAdmin, (req, res) => {
-  const sql = `SELECT * FROM event WHERE status = 'pending'`;
-  connection.query(sql, (err, results) => {
-    if (err) return res.status(500).json({ error: "Database error", err });
-    res.json({ pending_events: results });
-  });
-});
-
-// 🔐 Admin-only: Approve an event
-app.post("/admin/approve-event/:event_id", verifyAdmin, (req, res) => {
-  const event_id = req.params.event_id;
-  const sql = `UPDATE event SET status = 'approved' WHERE event_id = ? AND status = 'pending'`;
-
-  connection.query(sql, [event_id], (err, result) => {
-    if (err) return res.status(500).json({ error: "Database error", err });
-    if (result.affectedRows === 0)
-      return res.status(404).json({ message: "Event not found or already processed" });
-    res.json({ message: "Event approved successfully" });
-  });
-});
-
-// 🔐 Admin-only: Reject and delete an event
-app.delete("/admin/reject-event/:event_id", verifyAdmin, (req, res) => {
-  const event_id = req.params.event_id;
-  const sql = `DELETE FROM event WHERE event_id = ? AND status = 'pending'`;
-
-  connection.query(sql, [event_id], (err, result) => {
-    if (err) return res.status(500).json({ error: "Database error", err });
-    if (result.affectedRows === 0)
-      return res.status(404).json({ message: "Event not found or already processed" });
-    res.json({ message: "Event rejected and deleted successfully" });
-  });
-});
-
-
-// ==========================================================
-//       🌟 EVENT MANAGEMENT MODULE ENDS HERE
-// ==========================================================
-
-// sponsor management 
-//get all sponsor packages
-app.get("/sponsorship/packages", (req, res) => {
-  const sql = "SELECT * FROM sponsorship_package";
-  connection.query(sql, (err, results) => {
-    if (err) return res.status(500).json({ error: "Database error", err });
-    res.json({ packages: results });
-  });
-});
-
-// signs a contract 
-app.post("/sponsorship/sign", verifyRole("sponsor"), (req, res) => {
-  const { package_id, company_name, contact_email } = req.body;
-  const user_id = req.user.user_id;
-
-  if (!package_id || !company_name || !contact_email) {
-    return res.status(400).json({ message: "All fields are required." });
-  }
-
-  // First insert sponsor info
-  const sponsorSQL = `INSERT INTO sponsor (user_id, company_name, contact_email) VALUES (?, ?, ?)`;
-  connection.query(sponsorSQL, [user_id, company_name, contact_email], (err, result) => {
-    if (err) return res.status(500).json({ error: "Error inserting sponsor", err });
-
-    const sponsor_id = result.insertId;
-
-    // Then insert sponsorship record
-    const sponsorshipSQL = `INSERT INTO sponsorship (user_id, package_id, sponsor_id, contract_date)
-                            VALUES (?, ?, ?, NOW())`;
-    connection.query(sponsorshipSQL, [user_id, package_id, sponsor_id], (err2, result2) => {
-      if (err2) return res.status(500).json({ error: "Error signing sponsorship", err2 });
-      res.status(201).json({ message: "Sponsorship signed successfully", sponsorship_id: result2.insertId });
-    });
-  });
-});
-
-//signs a contract 
-app.post("/sponsorship/sign", verifyRole("sponsor"), (req, res) => {
-  const { package_id, company_name, contact_email } = req.body;
-  const user_id = req.user.user_id;
-
-  if (!package_id || !company_name || !contact_email) {
-    return res.status(400).json({ message: "All fields are required." });
-  }
-
-  // First insert sponsor info
-  const sponsorSQL = `INSERT INTO sponsor (user_id, company_name, contact_email) VALUES (?, ?, ?)`;
-  connection.query(sponsorSQL, [user_id, company_name, contact_email], (err, result) => {
-    if (err) return res.status(500).json({ error: "Error inserting sponsor", err });
-
-    const sponsor_id = result.insertId;
-
-    // Then insert sponsorship record
-    const sponsorshipSQL = `INSERT INTO sponsorship (user_id, package_id, sponsor_id, contract_date)
-                            VALUES (?, ?, ?, NOW())`;
-    connection.query(sponsorshipSQL, [user_id, package_id, sponsor_id], (err2, result2) => {
-      if (err2) return res.status(500).json({ error: "Error signing sponsorship", err2 });
-      res.status(201).json({ message: "Sponsorship signed successfully", sponsorship_id: result2.insertId });
-    });
-  });
-});
-
-//record of payment 
-
-app.post("/sponsorship/payment", verifyRole("sponsor"), (req, res) => {
-  const { sponsorship_id, amount, method } = req.body;
-
-  if (!sponsorship_id || !amount || !method) {
-    return res.status(400).json({ message: "All fields are required." });
-  }
-
-  const sql = `INSERT INTO payment (sponsorship_id, amount, method, payment_date)
-               VALUES (?, ?, ?, NOW())`;
-
-  connection.query(sql, [sponsorship_id, amount, method], (err, result) => {
-    if (err) return res.status(500).json({ error: "Payment failed", err });
-    res.status(201).json({ message: "Payment recorded", payment_id: result.insertId });
-  });
-});
-
-
-// admin view all sponsorship payments
-app.get("/admin/sponsorship-report", verifyAdmin, (req, res) => {
   const sql = `
-    SELECT s.sponsorship_id, sp.company_name, sp.contact_email,
-           p.amount, p.method, p.payment_date
-    FROM payment p
-    JOIN sponsorship s ON p.sponsorship_id = s.sponsorship_id
-    JOIN sponsor sp ON s.sponsor_id = sp.sponsor_id
-    ORDER BY p.payment_date DESC
+      UPDATE event
+      SET status = 'accepted', accepted = 1
+      WHERE event_id = ?
   `;
-  connection.query(sql, (err, results) => {
-    if (err) return res.status(500).json({ error: "Error fetching report", err });
-    res.json({ report: results });
+
+  connection.query(sql, [event_id], (err, result) => {
+      if (err) {
+          return res.status(500).json({ message: "Failed to accept event", error: err });
+      }
+      if (result.affectedRows === 0) {
+          return res.status(404).json({ message: "Event not found" });
+      }
+
+      res.status(200).json({ message: "Event accepted successfully" });
   });
 });
 
-app.listen(3000, function () {
-  console.log('App listening on port 3000');
-  connection.connect(function (err) {
-    if (err) throw err;
-    console.log('Database connected Yayyyyy!');
+
+app.put("/event/:eventId/reject", verifyAdmin, (req, res) => {
+  const { eventId } = req.params;
+
+  const sql = `
+      UPDATE event
+      SET status = 'accepted', accepted = 0
+      WHERE event_id = ?
+  `;
+
+  connection.query(sql, [eventId], (err, result) => {
+      if (err) {
+          return res.status(500).json({ message: "Database error while rejecting event", error: err });
+      }
+      if (result.affectedRows === 0) {
+          return res.status(404).json({ message: "Event not found" });
+      }
+      res.status(200).json({ message: "Event rejected successfully" });
   });
 });
+
+
+
+
+//---------------------------------SponsorShip ----------------------------------------------//
+
+app.post("/sponsorship/package", verifyAdmin, (req, res) => {
+  const { name, perks, price } = req.body;
+
+  // Validate required fields
+  if (!name || !perks || price === undefined) {
+      return res.status(400).json({ message: "All fields (name, perks, price) are required." });
+  }
+
+  const sql = `
+      INSERT INTO sponsorship_package (name, perks, price)
+      VALUES (?, ?, ?)
+  `;
+
+  connection.query(sql, [name, perks, price], (err, result) => {
+      if (err) {
+          return res.status(500).json({ message: "Failed to add sponsorship package", error: err });
+      }
+
+      res.status(201).json({
+          message: "Sponsorship package added successfully",
+          package_id: result.insertId
+      });
+  });
+});
+
+app.get("/sponsorship/packages", (req, res) => {
+  const sql = `
+      SELECT package_id, name, perks, price
+      FROM sponsorship_package
+  `;
+
+  connection.query(sql, (err, results) => {
+      if (err) {
+          return res.status(500).json({ message: "Failed to fetch packages", error: err });
+      }
+
+      res.status(200).json({ packages: results });
+  });
+});
+
+app.post("/sponsorship/add", verifyRole("sponsor"), (req, res) => {
+  const { package_id, payment_status } = req.body;
+
+  if (!package_id || typeof payment_status === 'undefined') {
+      return res.status(400).json({ message: "package_id and payment_status are required" });
+  }
+
+  // Step 1: Get sponsor_id from user_id
+  const getSponsorSql = `SELECT sponsor_id FROM sponsor WHERE user_id = ?`;
+  connection.query(getSponsorSql, [req.user.user_id], (err, sponsorResults) => {
+      if (err) return res.status(500).json({ message: "Database error", error: err });
+      if (sponsorResults.length === 0) return res.status(404).json({ message: "Sponsor not found" });
+
+      const sponsor_id = sponsorResults[0].sponsor_id;
+
+      // Step 2: Insert into sponsorship table
+      const insertSql = `
+          INSERT INTO sponsorship (sponsor_id, package_id, payment_status)
+          VALUES (?, ?, ?)
+      `;
+      connection.query(insertSql, [sponsor_id, package_id, payment_status], (err, result) => {
+          if (err) return res.status(500).json({ message: "Failed to add sponsorship", error: err });
+
+          res.status(201).json({ message: "Sponsorship added successfully", sponsorship_id: result.insertId });
+      });
+  });
+});
+
+app.post("/payment/add/sponsorship", verifyRole("sponsor"), (req, res) => {
+  const { payment_type, sponsorship_id, account_number } = req.body;
+
+  if (!payment_type || !sponsorship_id || !account_number) {
+      return res.status(400).json({ message: "payment_type, sponsorship_id, and account_number are required" });
+  }
+
+  // Step 1: Verify that the sponsorship_id belongs to this sponsor's user_id
+  const checkSql = ` 
+      SELECT s.id 
+      FROM sponsorship s
+      JOIN sponsor sp ON s.sponsor_id = sp.sponsor_id
+      WHERE s.id = ? AND sp.user_id = ? 
+  `;
+  connection.query(checkSql, [sponsorship_id, req.user.user_id], (err, result) => {
+      if (err) return res.status(500).json({ message: "Database error", error: err });
+      if (result.length === 0) {
+          return res.status(403).json({ message: "Unauthorized: Sponsorship does not belong to you." });
+      }
+
+      // Step 2: Add payment with account number
+      const insertSql = `
+          INSERT INTO payment (user_id, payment_type, verified_status, date, sponsorship_id, account_number)
+          VALUES (?, ?, false, ?, ?, ?)
+      `;
+      const now = moment().format("YYYY-MM-DD HH:mm:ss");  // Using moment here
+      connection.query(insertSql, [req.user.user_id, payment_type, now, sponsorship_id, account_number], (err, result) => {
+          if (err) return res.status(500).json({ message: "Payment failed", error: err });
+
+          res.status(201).json({ message: "Payment added successfully", payment_id: result.insertId });
+      });
+  });
+});
+
+
+
