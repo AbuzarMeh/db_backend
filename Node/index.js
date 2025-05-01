@@ -20,6 +20,10 @@ function generateToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
+function generateTeamId() {
+  return 'team-' + crypto.randomBytes(6).toString('hex'); // Generates a random 12-character team ID
+}
+
 // ----------- Table Creation (Unchanged) ------------------
 app.get("/create-tables", (req, res) => {
   const queries = [
@@ -513,7 +517,114 @@ app.put("/event/:eventId/reject", verifyAdmin, (req, res) => {
   });
 });
 
+app.post('/add-participants', verifyRole('student'), (req, res) => {
+  const { emails, event_id } = req.body;
+  const user_id = req.user.user_id;
 
+  if (!emails || !event_id) {
+    return res.status(400).json({ message: "Emails and event_id are required" });
+  }
+
+  // 1. Check if event is accepted
+  const checkEventSql = `SELECT accepted FROM event WHERE event_id = ?`;
+  connection.query(checkEventSql, [event_id], (err, result) => {
+    if (err) return res.status(500).json({ message: 'Database error', error: err });
+    if (result.length === 0) return res.status(404).json({ message: 'Event not found' });
+    if (result[0].accepted !== 1) return res.status(403).json({ message: 'Event not approved by admin' });
+
+    const team_id = generateTeamId();
+    const values = [[user_id, event_id, false, team_id]];
+
+    if (emails.length === 0) {
+      // Only the current user is joining
+      insertParticipants(values, res, team_id);
+    } else {
+      // 2. Get user IDs from emails
+      const placeholders = emails.map(() => '?').join(',');
+      const getUsersSql = `SELECT user_id FROM user WHERE email IN (${placeholders})`;
+
+      connection.query(getUsersSql, emails, (userErr, users) => {
+        if (userErr) return res.status(500).json({ message: 'Error fetching users', error: userErr });
+        if (users.length !== emails.length) {
+          return res.status(400).json({ message: 'Some emails do not exist in the system' });
+        }
+
+        users.forEach(user => {
+          values.push([user.user_id, event_id, false, team_id]);
+        });
+
+        insertParticipants(values, res, team_id);
+      });
+    }
+  });
+});
+
+// Helper function to insert participants
+function insertParticipants(values, res, team_id) {
+  const insertSql = `
+    INSERT INTO participant (user_id, event_id, payment_status, team_id)
+    VALUES ?
+  `;
+  connection.query(insertSql, [values], (insertErr, result) => {
+    if (insertErr) {
+      return res.status(500).json({ message: 'Error inserting participants', error: insertErr });
+    }
+    return res.status(201).json({
+      message: 'Participants added successfully',
+      team_id,
+      inserted_count: result.affectedRows
+    });
+  });
+}
+
+app.post('/add-payment/event', verifyRole('student'), (req, res) => {
+  const { payment_type, event_id, account_number } = req.body;  // Added account_number to the request body
+  const user_id = req.user.user_id; // Assuming user_id is added to req.user by your verifyRole middleware
+
+  if (!payment_type || !event_id || !account_number) {
+    return res.status(400).json({ message: 'Payment type, event ID, and account number are required' });
+  }
+
+  // Step 1: Find the team_id for the given user_id and event_id
+  const sqlFindTeam = `
+    SELECT team_id
+    FROM participant
+    WHERE user_id = ? AND event_id = ?
+  `;
+
+  connection.query(sqlFindTeam, [user_id, event_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error fetching participant', error: err });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ message: 'User is not participating in the event' });
+    }
+
+    const team_id = results[0].team_id;
+
+    // Step 2: Insert the payment record into the payment table
+    const sqlInsertPayment = `
+      INSERT INTO payment (user_id, payment_type, date, sponsorship_id, accommodation_id, team_id, account_number)
+      VALUES (?, ?, NOW(), ?, ?, ?, ?)
+    `;
+
+    connection.query(
+      sqlInsertPayment,
+      [user_id, payment_type, null, null, team_id, account_number],
+      (err, result) => {
+        if (err) {
+          return res.status(500).json({ message: 'Error inserting payment', error: err });
+        }
+
+        return res.status(201).json({
+          message: 'Payment added successfully',
+          payment_id: result.insertId
+        });
+      }
+    );
+  });
+});
 
 
 //---------------------------------SponsorShip ----------------------------------------------//
@@ -619,7 +730,6 @@ app.post("/payment/add/sponsorship", verifyRole("sponsor"), (req, res) => {
       });
   });
 });
-
 
 
 app.listen(3000, () => {
