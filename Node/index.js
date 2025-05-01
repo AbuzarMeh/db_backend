@@ -12,6 +12,12 @@ const SECRET_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJlbWF
 app.use(express.json());
 app.use(bearerToken());
 
+const cors = require('cors');
+app.use(cors({
+  origin: 'http://localhost:5173', // allow your frontend origin
+  credentials: true
+}));
+
 app.get('/', function (req, res) {
   return res.send("Welcome to our db Project");
 });
