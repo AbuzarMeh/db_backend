@@ -8,7 +8,9 @@ const bcrypt = require("bcrypt");
 const crypto = require("crypto");
 const { verifyToken, verifyAdmin, verifyRole } = require("./middleware/auth");
 const SECRET_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJlbWFpbCI6ImFkbWluQGFkbWluLmNvbSIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTc0NTMyODQzMCwiZXhwIjoxNzQ1MzMyMDMwfQ.fsF6kKidREhgQitmze2WdWTUmmdxQ6VFheORp36RptI";
-
+var cors = require('cors')
+ 
+app.use(cors())
 app.use(express.json());
 app.use(bearerToken());
 
