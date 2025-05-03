@@ -184,33 +184,76 @@ app.get("/create-tables", (req, res) => {
   });
 });
 
-app.post('/create-trigger/checkVenueAvailabilityBeforeInsert', (req, res) => {
+app.post("/create-participant-trigger", (req, res) => {
+  const triggerQuery = `
+    DELIMITER $$
+
+    CREATE TRIGGER close_registration_if_full
+    AFTER INSERT ON participant
+    FOR EACH ROW
+    BEGIN
+      DECLARE participant_count INT;
+      DECLARE max_allowed INT;
+
+      SELECT COUNT(*) INTO participant_count
+      FROM participant
+      WHERE event_id = NEW.event_id;
+
+      SELECT max_participants INTO max_allowed
+      FROM event
+      WHERE event_id = NEW.event_id;
+
+      IF participant_count >= max_allowed THEN
+        UPDATE event
+        SET accepted = FALSE
+        WHERE event_id = NEW.event_id;
+      END IF;
+    END$$
+
+    DELIMITER ;
+  `;
+
+  // Run the query
+  connection.query(triggerQuery, (err, result) => {
+    if (err) {
+      console.error("❌ Error creating trigger:", err.message);
+      return res.status(500).send(`Error: ${err.message}`);
+    }
+    res.send("✅ Trigger created successfully to close registration if event is full.");
+  });
+});
+
+app.post('/create-trigger/setPaymentStatusTrue', (req, res) => {
   const createTriggerSql = `
-      -- Change the delimiter to $$ temporarily
-      DELIMITER $$
+          DELIMITER $$
+        CREATE TRIGGER update_related_payment_status
+        AFTER UPDATE ON payment
+        FOR EACH ROW
+        BEGIN
+          -- Only run this if payment was just verified
+          IF NEW.verified_status = TRUE AND OLD.verified_status = FALSE THEN
 
-      CREATE TRIGGER check_venue_availability_before_insert
-      BEFORE INSERT ON event_round
-      FOR EACH ROW
-      BEGIN
-          -- Declare the variable to store the count of bookings
-          DECLARE venue_count INT;
+            -- If it's a sponsorship payment
+            IF NEW.sponsorship_id IS NOT NULL THEN
+              UPDATE sponsorship
+              SET payment_status = TRUE
+              WHERE id = NEW.sponsorship_id;
 
-          -- Check if the venue is already booked at the selected date and time
-          SELECT COUNT(*) INTO venue_count
-          FROM event_round
-          WHERE venue_id = NEW.venue_id
-            AND DATE(NEW.date_time) = DATE(date_time)  -- Compare only the date part
-            AND TIME(NEW.date_time) BETWEEN TIME(date_time) AND ADDTIME(TIME(date_time), '02:00:00'); -- Assuming a 2-hour round duration
+            -- If it's an accommodation payment
+            ELSEIF NEW.accommodation_id IS NOT NULL THEN
+              UPDATE accommodation
+              SET payment_status = TRUE
+              WHERE accommodation_id = NEW.accommodation_id;
 
-          -- If the venue is already booked, throw an error
-          IF venue_count > 0 THEN
-              SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'The venue is already booked for this date and time.';
+            -- If it's a team/participant payment
+            ELSEIF NEW.team_id IS NOT NULL THEN
+              UPDATE participant
+              SET payment_status = TRUE
+              WHERE team_id = NEW.team_id ;
+            END IF;
           END IF;
-      END $$
-
-      -- Reset the delimiter to the default semicolon
-      DELIMITER ;
+        END$$
+        DELIMITER ;
   `;
 
   // Execute the query to create the trigger
@@ -257,6 +300,109 @@ app.post("/alter-payment-account", (req, res) => {
       }
 
       res.status(200).json({ message: "Column 'account_number' added to event table successfully" });
+  });
+});
+
+app.post("/alter/event-table", (req, res) => {
+  const sql = `
+    ALTER TABLE event
+    ADD COLUMN registration_open BOOLEAN DEFAULT TRUE;
+  `;
+
+  connection.query(sql, (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: "Error adding column to event table", error: err });
+    }
+
+    res.status(200).json({ message: "Column 'registration_open' added to event table successfully" });
+  });
+});
+
+app.post("/create/scheduled/events", (req, res) => {
+  const createEventQuery1 = `
+    CREATE EVENT remove_unpaid_participants
+    ON SCHEDULE EVERY 1 DAY
+    STARTS '2025-05-04 00:00:00'
+    DO
+    BEGIN
+      DELETE FROM participant
+      WHERE payment_status = FALSE;
+    END;
+  `;
+
+  const createEventQuery2 = `
+    CREATE EVENT close_registration_2_days_left
+    ON SCHEDULE EVERY 1 DAY
+    STARTS '2025-05-04 00:00:00'
+    DO
+    BEGIN
+      UPDATE event
+      SET registration_open = FALSE
+      WHERE registration_open = TRUE AND registration_deadline <= NOW() + INTERVAL 2 DAY;
+    END;
+  `;
+
+  // Create the event to remove unpaid participants
+  connection.query(createEventQuery1, (err1, result1) => {
+    if (err1) {
+      return res.status(500).json({ message: "Error creating event to remove unpaid participants", error: err1 });
+    }
+
+    // Create the event to close registration 2 days before the event round
+    connection.query(createEventQuery2, (err2, result2) => {
+      if (err2) {
+        return res.status(500).json({ message: "Error creating event to close registration", error: err2 });
+      }
+
+      // Success response
+      res.status(200).json({
+        message: "Scheduled events for unpaid participants removal and event registration closure created successfully"
+      });
+    });
+  });
+});
+
+app.post('/create/participant-trigger', (req, res) => {
+  const createTriggerQuery = `
+    DELIMITER $$
+
+    CREATE TRIGGER close_registration_if_max_participants_reached
+    AFTER INSERT ON participant
+    FOR EACH ROW
+    BEGIN
+      -- Declare a variable to hold the current count of participants
+      DECLARE participant_count INT;
+
+      -- Get the current number of participants for the event
+      SELECT COUNT(*) INTO participant_count
+      FROM participant
+      WHERE event_id = NEW.event_id;
+
+      -- Get the max participants allowed for the event
+      DECLARE max_participants INT;
+      SELECT max_participants INTO max_participants
+      FROM event
+      WHERE event_id = NEW.event_id;
+
+      -- If the participant count is greater than or equal to max participants, close registration
+      IF participant_count >= max_participants THEN
+        UPDATE event
+        SET accepted = FALSE
+        WHERE event_id = NEW.event_id;
+      END IF;
+    END $$
+
+    DELIMITER ;
+  `;
+
+  // Execute the query to create the trigger
+  connection.query(createTriggerQuery, (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: 'Error creating trigger', error: err });
+    }
+
+    // Send success response if the query was successful
+    res.status(200).json({ message: 'Trigger created successfully to close registration when max participants are reached' });
   });
 });
 
@@ -317,6 +463,118 @@ app.post("/login", (req, res) => {
   });
 });
 
+app.post("/payment/verify", verifyRole("admin"), (req, res) => {
+  const { payment_id } = req.body;
+
+  if (!payment_id) {
+    return res.status(400).json({ message: "payment_id is required" });
+  }
+
+  const sql = `
+    UPDATE payment
+    SET verified_status = true
+    WHERE payment_id = ?
+  `;
+
+  connection.query(sql, [payment_id], (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: "Failed to verify payment", error: err });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Payment not found" });
+    }
+
+    res.status(200).json({ message: "Payment verified successfully" });
+  });
+});
+
+app.get("/participants/event", verifyRole("admin"), (req, res) => {
+  const sql = "SELECT * FROM participant_list_with_event";
+
+  connection.query(sql, (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: "Error fetching participant list with event details", error: err });
+    }
+
+    res.status(200).json({
+      message: "Participant list with event details",
+      data: results
+    });
+  });
+});
+
+app.get("/participants/accommodation", verifyRole("admin"), (req, res) => {
+  const sql = "SELECT * FROM participant_with_accommodation";
+
+  connection.query(sql, (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: "Error fetching participant list with accommodation details", error: err });
+    }
+
+    res.status(200).json({
+      message: "Participant list with accommodation details",
+      data: results
+    });
+  });
+});
+
+app.post("/create/view/participant_event", verifyRole("admin"), (req, res) => {
+  const createViewQuery = `
+    CREATE VIEW IF NOT EXISTS participant_list_with_event AS
+    SELECT 
+      p.participant_id,
+      u.name AS participant_name,
+      u.email AS participant_email,
+      e.name AS event_name,
+      e.category AS event_category,
+      p.team_id,
+      p.payment_status AS participant_payment_status
+    FROM participant p
+    INNER JOIN user u ON p.user_id = u.user_id
+    INNER JOIN event e ON p.event_id = e.event_id;
+  `;
+
+  connection.query(createViewQuery, (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: "Error creating view for participant list with event", error: err });
+    }
+
+    res.status(200).json({
+      message: "View for participant list with event created successfully"
+    });
+  });
+});
+
+
+app.post("/create/view/participant_accommodation", verifyRole("admin"), (req, res) => {
+  const createViewQuery = `
+    CREATE VIEW IF NOT EXISTS participant_with_accommodation AS
+    SELECT 
+      p.participant_id,
+      u.name AS participant_name,
+      u.email AS participant_email,
+      a.room_type,
+      a.cost AS accommodation_cost,
+      a.payment_status AS accommodation_payment_status,
+      p.team_id
+    FROM participant p
+    INNER JOIN user u ON p.user_id = u.user_id
+    LEFT JOIN accommodation a ON p.user_id = a.user_id;
+  `;
+
+  connection.query(createViewQuery, (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: "Error creating view for participant list with accommodation", error: err });
+    }
+
+    res.status(200).json({
+      message: "View for participant list with accommodation created successfully"
+    });
+  });
+});
+
+
 
 // ----------- Admin: Add Venue ------------------
 app.post("/addVenue", verifyAdmin, (req, res) => {
@@ -355,7 +613,7 @@ app.post("/sponsor/add", (req, res) => {
 });
 
 
-// 🌟 EVENT MANAGEMENT MODULE 🌟
+// --------------------------------- EVENT ------------------------------// 
 
 app.post("/event", verifyRole("organizer"), (req, res) => {
   const {
@@ -590,7 +848,7 @@ function insertParticipants(values, res, team_id) {
 }
 
 app.post('/add-payment/event', verifyRole('student'), (req, res) => {
-  const { payment_type, event_id, account_number } = req.body;  // Added account_number to the request body
+  const { payment_type, event_id, account_number , amount } = req.body;  // Added account_number to the request body
   const user_id = req.user.user_id; // Assuming user_id is added to req.user by your verifyRole middleware
 
   if (!payment_type || !event_id || !account_number) {
@@ -617,13 +875,13 @@ app.post('/add-payment/event', verifyRole('student'), (req, res) => {
 
     // Step 2: Insert the payment record into the payment table
     const sqlInsertPayment = `
-      INSERT INTO payment (user_id, payment_type, date, sponsorship_id, accommodation_id, team_id, account_number)
+      INSERT INTO payment (user_id, payment_type, date, sponsorship_id, accommodation_id, team_id, account_number , amount )
       VALUES (?, ?, NOW(), ?, ?, ?, ?)
     `;
 
     connection.query(
       sqlInsertPayment,
-      [user_id, payment_type, null, null, team_id, account_number],
+      [user_id, payment_type, null, null, team_id, account_number , amount],
       (err, result) => {
         if (err) {
           return res.status(500).json({ message: 'Error inserting payment', error: err });
@@ -635,6 +893,31 @@ app.post('/add-payment/event', verifyRole('student'), (req, res) => {
         });
       }
     );
+  });
+});
+
+app.get("/participants/event/:event_id", (req, res) => {
+  const { event_id } = req.params;
+
+  const sql = `
+    SELECT 
+      participant.participant_id,
+      participant.team_id,
+      user.user_id,
+      user.name,
+      user.email,
+      participant.payment_status
+    FROM participant
+    JOIN user ON participant.user_id = user.user_id
+    WHERE participant.event_id = ?
+  `;
+
+  connection.query(sql, [event_id], (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: "Failed to retrieve participants", error: err });
+    }
+
+    res.status(200).json({ participants: results });
   });
 });
 
@@ -710,7 +993,7 @@ app.post("/sponsorship/add", verifyRole("sponsor"), (req, res) => {
 });
 
 app.post("/payment/add/sponsorship", verifyRole("sponsor"), (req, res) => {
-  const { payment_type, sponsorship_id, account_number } = req.body;
+  const { payment_type, sponsorship_id, account_number , amount } = req.body;
 
   if (!payment_type || !sponsorship_id || !account_number) {
       return res.status(400).json({ message: "payment_type, sponsorship_id, and account_number are required" });
@@ -731,15 +1014,210 @@ app.post("/payment/add/sponsorship", verifyRole("sponsor"), (req, res) => {
 
       // Step 2: Add payment with account number
       const insertSql = `
-          INSERT INTO payment (user_id, payment_type, verified_status, date, sponsorship_id, account_number)
+          INSERT INTO payment (user_id, payment_type, verified_status, date, sponsorship_id, account_number , amount)
           VALUES (?, ?, false, ?, ?, ?)
       `;
       const now = moment().format("YYYY-MM-DD HH:mm:ss");  // Using moment here
-      connection.query(insertSql, [req.user.user_id, payment_type, now, sponsorship_id, account_number], (err, result) => {
+      connection.query(insertSql, [req.user.user_id, payment_type, now, sponsorship_id, account_number,amount], (err, result) => {
           if (err) return res.status(500).json({ message: "Payment failed", error: err });
 
           res.status(201).json({ message: "Payment added successfully", payment_id: result.insertId });
       });
+  });
+});
+
+app.get("/sponsorship/funds", verifyRole("admin"), async (req, res) => {
+  try {
+    // Total sponsorship
+    const totalQuery = `
+      SELECT SUM(amount) AS total_funds
+      FROM payment
+      WHERE sponsorship_id is NOT NULL AND verified_status = TRUE
+    `;
+
+    // Sponsor-wise breakdown
+    const breakdownQuery = `
+      SELECT sp.sponsor_id, sp.contact_person AS sponsor_name, SUM(p.amount) AS sponsor_total
+      FROM payment p
+      JOIN sponsorship s ON p.sponsorship_id = s.id
+      JOIN sponsor sp ON s.sponsor_id = sp.sponsor_id
+      WHERE sponsorship_id is NOT NULL AND p.verified_status = TRUE
+      GROUP BY sp.sponsor_id, sp.contact_person
+    `;
+
+    connection.query(totalQuery, (err, totalResult) => {
+      if (err) {
+        return res.status(500).json({ message: "Error fetching total sponsorship funds", error: err });
+      }
+
+      connection.query(breakdownQuery, (err2, breakdownResult) => {
+        if (err2) {
+          return res.status(500).json({ message: "Error fetching sponsor-wise totals", error: err2 });
+        }
+
+        res.status(200).json({
+          total_sponsorship_funds: totalResult[0].total_funds || 0,
+          sponsor_breakdown: breakdownResult,
+        });
+      });
+    });
+
+  } catch (error) {
+    res.status(500).json({ message: "Unexpected error", error });
+  }
+});
+
+
+app.get("/report/sponsorships", verifyRole("admin"), (req, res) => {
+  const sql = `
+    SELECT 
+      sp.sponsor_id,
+      sp.contact_person AS sponsor_name,
+      s.id AS sponsorship_id,
+      s.payment_status AS sponsorship_status,
+      p.payment_id,
+      p.verified_status AS payment_verified,
+      p.date AS payment_date,
+      p.amount AS payment_amount
+    FROM sponsorship s
+    INNER JOIN sponsor sp ON s.sponsor_id = sp.sponsor_id
+    INNER JOIN payment p ON p.sponsorship_id = s.id
+    WHERE p.sponsorship_id is NOT NULL 
+  `;
+
+  connection.query(sql, (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: "Error fetching sponsorship report", error: err });
+    }
+
+    res.status(200).json({
+      message: "Sponsorship details with payment information",
+      data: results
+    });
+  });
+});
+
+
+
+
+
+//------------------------------------ACCOMODATION -------------------------------/ 
+
+
+
+app.post("/accommodation/request", verifyRole("student"), (req, res) => {
+  const { room_type, cost } = req.body;
+
+  if (!room_type || !cost) {
+    return res.status(400).json({ message: "room_type and cost are required" });
+  }
+
+  const sql = `
+    INSERT INTO accommodation (user_id, room_type, cost, assigned, payment_status)
+    VALUES (?, ?, ?, false, false)
+  `;
+
+  connection.query(
+    sql,
+    [req.user.user_id, room_type, cost],
+    (err, result) => {
+      if (err) {
+        return res.status(500).json({ message: "Accommodation request failed", error: err });
+      }
+
+      res.status(201).json({
+        message: "Accommodation request submitted",
+        accommodation_id: result.insertId
+      });
+    }
+  );
+});
+
+app.post("/accommodation/accept", verifyRole("admin"), (req, res) => {
+  const { accommodation_id } = req.body;
+
+  if (!accommodation_id) {
+    return res.status(400).json({ message: "accommodation_id is required" });
+  }
+
+  const sql = `
+    UPDATE accommodation
+    SET assigned = true
+    WHERE accommodation_id = ?
+  `;
+
+  connection.query(sql, [accommodation_id], (err, result) => {
+    if (err) {
+      return res.status(500).json({ message: "Failed to accept accommodation", error: err });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Accommodation request not found" });
+    }
+
+    res.status(200).json({ message: "Accommodation request accepted successfully" });
+  });
+});
+
+app.post("/payment/accommodation", verifyRole("student"), (req, res) => {
+  const { accommodation_id, amount } = req.body;
+
+  if (!accommodation_id || !amount) {
+    return res.status(400).json({ message: "accommodation_id and amount are required" });
+  }
+
+  const sql = `
+    INSERT INTO payment (
+      user_id,
+      payment_type,
+      verified_status,
+      date,
+      accommodation_id,
+      amount
+    ) VALUES (?, 'accommodation', false, NOW(), ?, ?)
+  `;
+
+  connection.query(
+    sql,
+    [req.user.user_id, accommodation_id, amount],
+    (err, result) => {
+      if (err) {
+        return res.status(500).json({ message: "Failed to process accommodation payment", error: err });
+      }
+
+      res.status(201).json({
+        message: "Accommodation payment submitted for verification",
+        payment_id: result.insertId
+      });
+    }
+  );
+});
+
+app.get("/report/participants-accommodation", verifyRole("admin"), (req, res) => {
+  const sql = `
+    SELECT 
+      u.user_id,
+      u.name AS participant_name,
+      a.accommodation_id,
+      a.room_type,
+      a.cost,
+      a.assigned,
+      a.payment_status
+    FROM participant p
+    INNER JOIN user u ON p.user_id = u.user_id
+    INNER JOIN accommodation a ON p.user_id = a.user_id
+    WHERE a.assigned = TRUE
+  `;
+
+  connection.query(sql, (err, results) => {
+    if (err) {
+      return res.status(500).json({ message: "Error generating report", error: err });
+    }
+
+    res.status(200).json({
+      message: "Participants with assigned accommodations",
+      data: results
+    });
   });
 });
 
