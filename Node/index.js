@@ -14,7 +14,6 @@ app.use(cors())
 app.use(express.json());
 app.use(bearerToken());
 
-const cors = require('cors');
 app.use(cors({
   origin: 'http://localhost:5173', // allow your frontend origin
   credentials: true
