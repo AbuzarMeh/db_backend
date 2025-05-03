@@ -611,6 +611,44 @@ app.post("/sponsor/add", (req, res) => {
   });
 });
 
+app.get("/venues", (req, res) => {
+  const query = `SELECT * FROM venue`;
+  connection.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching venues:", err);
+      return res.status(500).json({ message: "Error fetching venues", error: err });
+    }
+    res.json(results);
+  });
+});
+
+app.get("/booked-venues", (req, res) => {
+  const query = `
+    SELECT 
+      v.venue_id,
+      v.name AS venue_name,
+      v.location,
+      v.type,
+      v.capacity,
+      er.event_round_id,
+      er.date_time,
+      e.name AS event_name,
+      e.event_id
+    FROM event_round er
+    INNER JOIN venue v ON er.venue_id = v.venue_id
+    INNER JOIN event e ON er.event_id = e.event_id
+    ORDER BY er.date_time ASC
+  `;
+
+  connection.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching booked venue instances:", err);
+      return res.status(500).json({ message: "Error fetching booked venues", error: err });
+    }
+    res.json(results);
+  });
+});
+
 
 // --------------------------------- EVENT ------------------------------// 
 
@@ -921,7 +959,41 @@ app.get("/participants/event/:event_id", (req, res) => {
   });
 });
 
+app.get("/organizer-events", (req, res) => {
+  const authHeader = req.headers.authorization;
 
+  if (!authHeader) {
+    return res.status(401).json({ message: "Missing Authorization header" });
+  }
+
+  const token = authHeader.split(" ")[1]; // Expecting format: Bearer <token>
+
+  try {
+    const decoded = jwt.verify(token, SECRET_KEY);
+    const organizerId = decoded.user_id; // Assuming token includes { user_id: ... }
+
+    const query = `
+      SELECT * FROM event
+      WHERE organizer_id = ?
+    `;
+
+    connection.query(query, [organizerId], (err, results) => {
+      if (err) {
+        console.error("Error fetching organizer's events:", err);
+        return res.status(500).json({ message: "Error fetching events", error: err });
+      }
+
+      if (results.length === 0) {
+        return res.status(404).json({ message: "No events found for this organizer" });
+      }
+
+      res.json(results);
+    });
+
+  } catch (err) {
+    return res.status(401).json({ message: "Invalid or expired token", error: err });
+  }
+});
 //---------------------------------SponsorShip ----------------------------------------------//
 
 app.post("/sponsorship/package", verifyAdmin, (req, res) => {
