@@ -9,7 +9,6 @@ const crypto = require("crypto");
 const { verifyToken, verifyAdmin, verifyRole } = require("./middleware/auth");
 const SECRET_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjozLCJlbWFpbCI6ImFkbWluQGFkbWluLmNvbSIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTc0NTMyODQzMCwiZXhwIjoxNzQ1MzMyMDMwfQ.fsF6kKidREhgQitmze2WdWTUmmdxQ6VFheORp36RptI";
 var cors = require('cors')
-
 app.use(cors())
 app.use(express.json());
 app.use(bearerToken());
@@ -794,6 +793,7 @@ app.post('/add-participants', verifyRole('student'), (req, res) => {
   if (!emails || !event_id) {
     return res.status(400).json({ message: "Emails and event_id are required" });
   }
+
 
   // 1. Check if event is accepted
   const checkEventSql = `SELECT accepted FROM event WHERE event_id = ?`;
