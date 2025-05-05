@@ -143,10 +143,10 @@ app.get("/create-tables", (req, res) => {
     `CREATE TABLE IF NOT EXISTS judge (
       judge_id INT PRIMARY KEY AUTO_INCREMENT,
       user_id INT,
-      event_round_id INT,
+      event_id INT,
       FOREIGN KEY (user_id) REFERENCES user(user_id),
-      FOREIGN KEY (event_round_id) REFERENCES event_round(event_round_id)
-    );`,
+      FOREIGN KEY (event_id) REFERENCES event(event_id)
+    )`
 
     // Score
     `CREATE TABLE IF NOT EXISTS score (
@@ -1292,6 +1292,71 @@ app.get("/report/participants-accommodation", verifyRole("admin"), (req, res) =>
     });
   });
 });
+
+
+//------------------------------------ Accomodations -------------------------------/ 
+
+app.get("/admin/judges", verifyAdmin, (req, res) => {
+  const query = `
+    SELECT u.user_id, u.name, u.email
+    FROM user u
+    WHERE u.role = 'judge'
+  `;
+
+  connection.query(query, (err, results) => {
+    if (err) {
+      console.error("Error fetching judges:", err);
+      return res.status(500).json({ message: "Error fetching judges", error: err });
+    }
+
+    res.json(results);
+  });
+});
+
+app.post("/admin/assign-judge", verifyAdmin, (req, res) => {
+  const { user_id, event_id } = req.body;
+
+  if (!user_id || !event_id) {
+    return res.status(400).json({ message: "Missing user_id or event_id" });
+  }
+
+  const insertQuery = `
+    INSERT INTO judge (user_id, event_id)
+    VALUES (?, ?)
+  `;
+
+  connection.query(insertQuery, [user_id, event_id], (err, result) => {
+    if (err) {
+      console.error("Error assigning judge:", err);
+      return res.status(500).json({ message: "Error assigning judge", error: err });
+    }
+
+    res.json({ message: "Judge assigned successfully", judge_id: result.insertId });
+  });
+});
+
+app.post("/judge/mark-score", verifyRole('judge'), (req, res) => {
+  const { team_id, event_round_id, score } = req.body;
+
+  if (!team_id || !event_round_id || score === undefined) {
+    return res.status(400).json({ message: "Missing required fields: team_id, event_round_id, score" });
+  }
+
+  const insertQuery = `
+    INSERT INTO score (team_id, event_round_id, score)
+    VALUES (?, ?, ?)
+  `;
+
+  connection.query(insertQuery, [team_id, event_round_id, score], (err, result) => {
+    if (err) {
+      console.error("Error marking score:", err);
+      return res.status(500).json({ message: "Error saving score", error: err });
+    }
+
+    res.json({ message: "Score marked successfully", score_id: result.insertId });
+  });
+});
+
 
 
 app.listen(3000, () => {
