@@ -507,13 +507,12 @@ app.post("/event/accept/:event_id", verifyAdmin, (req, res) => {
   });
 });
 
-
 app.put("/event/:eventId/reject", verifyAdmin, (req, res) => {
   const { eventId } = req.params;
 
   const sql = `
       UPDATE event
-      SET status = 'accepted', accepted = 0
+      SET status = 'rejected', accepted = 0
       WHERE event_id = ?
   `;
 
